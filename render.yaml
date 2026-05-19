@@ -1,23 +1,22 @@
 services:
-  # ── Backend FastAPI ──────────────────────────────────────────────────────────
   - type: web
     name: soprattitoli-backend
     runtime: python
     rootDir: backend
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GEMINI_API_KEY
-        sync: false          # lo inserisci tu manualmente nel pannello Render
+        sync: false
 
-  # ── Frontend React (build statica) ──────────────────────────────────────────
   - type: web
     name: soprattitoli-frontend
     runtime: static
     rootDir: frontend
+    plan: free
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        # Sostituisci con l'URL del tuo backend dopo il primo deploy
-        value: https://soprattitoli-backend.onrender.com
+        sync: false
