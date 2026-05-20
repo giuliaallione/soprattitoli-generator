@@ -3,7 +3,7 @@ services:
     name: soprattitoli-backend
     runtime: python
     rootDir: backend
-    plan: Hobby
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -14,7 +14,7 @@ services:
     name: soprattitoli-frontend
     runtime: static
     rootDir: frontend
-    plan: Hobby
+    plan: free
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     envVars:
