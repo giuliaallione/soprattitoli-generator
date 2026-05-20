@@ -9,11 +9,12 @@ services:
       - key: GEMINI_API_KEY
         sync: false
 
-  - type: static
+  - type: web
     name: soprattitoli-frontend
+    runtime: node
     rootDir: frontend
     buildCommand: npm install && npm run build
-    staticPublishPath: dist
+    startCommand: npx serve -s dist -l $PORT
     envVars:
       - key: VITE_API_URL
         sync: false
