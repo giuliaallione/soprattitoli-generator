@@ -9,8 +9,8 @@ import urllib.request
 import urllib.error
 
 GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-1.5-flash-latest:generateContent"
+    "https://generativelanguage.googleapis.com/v1/models/"
+    "gemini-1.5-flash:generateContent"
 )
 
 SYSTEM_PROMPT = """Sei un esperto di adattamento di testi per soprattitoli teatrali.
