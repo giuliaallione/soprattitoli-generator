@@ -1,6 +1,7 @@
 """
-parser.py – Logica di parsing del copione (portata dal codice originale Tkinter).
-Nessuna dipendenza da UI: funziona sia standalone che nel contesto web.
+parser.py – Logica di parsing del copione.
+Supporta nomi in MAIUSCOLO, GRASSETTO, o criterio custom.
+Include suddivisione battute a max N caratteri per parola.
 """
 
 import re
@@ -19,65 +20,138 @@ COLOR_META = {
 COLOR_ORDER = ['w', 'c', 'g', 'm']
 
 
-# ── Funzioni di parsing ────────────────────────────────────────────────────────
+# ── Utilità ────────────────────────────────────────────────────────────────────
 
 def is_para_italic(para):
-    """True se tutti i run non vuoti del paragrafo sono in corsivo."""
     runs = [r for r in para.runs if r.text.strip()]
     return bool(runs) and all(r.italic for r in runs)
 
 
 def split_sentences(text):
-    """Divide il testo in frasi sui . ! ? seguiti da spazio o fine stringa."""
     parts = re.split(r'(?<=[.!?])\s+', text.strip())
     return [p.strip() for p in parts if p.strip()]
 
 
 def extract_inline_parens(text):
-    """Estrae il contenuto tra parentesi inline; restituisce (testo_pulito, note)."""
     notes = re.findall(r'\(([^)]+)\)', text)
     clean = re.sub(r'\s*\([^)]+\)', '', text).strip()
     return clean, '; '.join(notes)
 
 
+def is_caps(text):
+    words = text.split()
+    return (bool(words)
+            and all(w == w.upper() for w in words)
+            and any(c.isalpha() for c in text)
+            and len(words) <= 6)
+
+
+def get_bold_prefix(para):
+    """Estrae nome in grassetto + resto testo normale dalla stessa riga."""
+    bold_text = []
+    normal_text = []
+    in_bold = True
+    for run in para.runs:
+        if not run.text:
+            continue
+        if in_bold and run.bold:
+            bold_text.append(run.text)
+        else:
+            in_bold = False
+            normal_text.append(run.text)
+    name = ''.join(bold_text).strip()
+    rest = ''.join(normal_text).strip()
+    if name and rest:
+        return name, rest
+    return None, None
+
+
+def split_at_max_chars(text: str, max_chars: int = 42) -> list[str]:
+    """
+    Divide il testo in righe di massimo max_chars caratteri,
+    spezzando sugli spazi (non taglia le parole).
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    lines = []
+    words = text.split(' ')
+    current = ''
+
+    for word in words:
+        if not current:
+            current = word
+        elif len(current) + 1 + len(word) <= max_chars:
+            current += ' ' + word
+        else:
+            lines.append(current)
+            current = word
+
+    if current:
+        lines.append(current)
+
+    return lines
+
+
+# ── Parser principale ──────────────────────────────────────────────────────────
+
 def parse_document(path: str, criteria: dict) -> list[dict]:
-    """
-    Legge il .docx e restituisce lista di dict:
-      {colore, personaggio, ita, note}
-    """
     doc = docx.Document(path)
     rows = []
     current_char = None
 
     name_caps   = criteria.get('name_caps', True)
+    name_bold   = criteria.get('name_bold', False)
+    name_custom = criteria.get('name_custom', '')
     name_sep    = criteria.get('name_sep', True)
     sep_char    = criteria.get('sep_char', ' – ')
     desc_italic = criteria.get('desc_italic', True)
     desc_parens = criteria.get('desc_parens', True)
+    max_chars   = int(criteria.get('max_chars', 42))
 
-    def add_row(char, ita, note=''):
-        rows.append({'colore': '', 'personaggio': char or '', 'ita': ita, 'note': note})
+    def add_rows(char, ita, note=''):
+        """Aggiunge una o più righe spezzando ITA a max_chars."""
+        if ita:
+            lines = split_at_max_chars(ita, max_chars)
+            for line in lines:
+                rows.append({'colore': '', 'personaggio': char or '', 'ita': line, 'note': note})
+        else:
+            rows.append({'colore': '', 'personaggio': char or '', 'ita': '', 'note': note})
 
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
             continue
 
-        # 1. Paragrafo interamente in corsivo → didascalia
+        # 1. Corsivo → didascalia
         if desc_italic and is_para_italic(para):
-            add_row(current_char, '', text)
+            add_rows(current_char, '', text)
             continue
 
-        # 2. Paragrafo interamente tra parentesi → didascalia
+        # 2. Parentesi intere → didascalia
         if desc_parens and text.startswith('(') and text.endswith(')'):
-            add_row(current_char, '', text[1:-1].strip())
+            add_rows(current_char, '', text[1:-1].strip())
             continue
 
         character = None
         dialogue  = text
 
-        # 3. Nome personaggio + separatore nella stessa riga
-        if name_sep and sep_char in text:
+        # 3. Nome in GRASSETTO + battuta nella stessa riga
+        if name_bold:
+            bold_name, bold_rest = get_bold_prefix(para)
+            if bold_name:
+                name_clean, name_note = extract_inline_parens(bold_name)
+                name_clean = name_clean.strip()
+                if name_clean:
+                    character = name_clean
+                    dialogue  = bold_rest if bold_rest else ''
+                    if name_note and not dialogue:
+                        add_rows(character, '', name_note)
+                        current_char = character
+                        continue
+
+        # 4. Nome + separatore
+        if character is None and name_sep and sep_char and sep_char in text:
             idx = text.index(sep_char)
             candidate = text[:idx].strip()
             rest = text[idx + len(sep_char):].strip()
@@ -85,25 +159,33 @@ def parse_document(path: str, criteria: dict) -> list[dict]:
                 character = candidate
                 dialogue  = rest
 
-        # 4. Riga standalone: nome in MAIUSCOLO con eventuale didascalia tra parentesi
+        # 5. Maiuscolo standalone
         if character is None and name_caps:
             text_no_paren, inline_note = extract_inline_parens(text)
             text_no_paren = text_no_paren.strip()
-            words = text_no_paren.split()
-            is_caps = (bool(words)
-                       and all(w == w.upper() for w in words)
-                       and any(c.isalpha() for c in text_no_paren)
-                       and len(words) <= 5)
-            if is_caps:
+            if is_caps(text_no_paren):
                 current_char = text_no_paren
                 if inline_note:
-                    add_row(current_char, '', inline_note)
+                    add_rows(current_char, '', inline_note)
+                continue
+
+        # 5b. Criterio personalizzato
+        if character is None and name_custom and text.startswith(name_custom):
+            rest = text[len(name_custom):].strip()
+            if rest:
+                character = name_custom.strip()
+                dialogue = rest
+            else:
+                current_char = name_custom.strip()
                 continue
 
         if character:
             current_char = character
 
-        # 5. Dividi il dialogo in frasi
+        if not dialogue:
+            continue
+
+        # Dividi in frasi, poi in righe da max_chars
         sentences = split_sentences(dialogue)
         for sentence in sentences:
             if desc_parens:
@@ -111,13 +193,12 @@ def parse_document(path: str, criteria: dict) -> list[dict]:
             else:
                 clean_s, inline_note = sentence, ''
             if clean_s:
-                add_row(current_char, clean_s, inline_note)
+                add_rows(current_char, clean_s, inline_note)
 
     return rows
 
 
 def count_chars(rows: list[dict]) -> dict:
-    """Conta i caratteri per personaggio (battute ITA, spazi inclusi)."""
     counts = defaultdict(int)
     for row in rows:
         if row.get('ita') and row.get('personaggio'):
@@ -126,11 +207,6 @@ def count_chars(rows: list[dict]) -> dict:
 
 
 def propose_colors(rows: list[dict]) -> list[dict]:
-    """
-    Ritorna la proposta colori automatica:
-    lista di {personaggio, count, color_key, color_name, color_hex}
-    per i top-4 personaggi per numero di caratteri.
-    """
     counts = count_chars(rows)
     if not counts:
         return []
@@ -143,16 +219,12 @@ def propose_colors(rows: list[dict]) -> list[dict]:
             'count': count,
             'color_key': key,
             'color_name': COLOR_META[key]['name'],
-            'color_hex': COLOR_META[key]['hex'],
+            'color_hex':  COLOR_META[key]['hex'],
         })
     return result
 
 
 def apply_colors(rows: list[dict], assignments: dict) -> list[dict]:
-    """
-    Applica i colori alle righe.
-    assignments = {'NOME_PERSONAGGIO': 'w', 'ALTRO': 'c', ...}
-    """
     for row in rows:
         char = row.get('personaggio', '')
         if char in assignments:
