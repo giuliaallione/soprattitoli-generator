@@ -1,34 +1,24 @@
 """
-main.py – Server FastAPI per Soprattitoli Generator.
-Percorsi: ITA (copione Word) e ITA+ (Excel esistente).
+main.py – FastAPI. Dopo il parsing chiama Gemini per suddivisione intelligente.
 """
 
-import os
-import io
-import uuid
-import tempfile
+import os, io, uuid, tempfile
 from pathlib import Path
-from typing import Optional
-
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.utils import get_column_letter
 
-from parser import parse_document, propose_colors, apply_colors, COLOR_META, split_at_max_chars
-from ai import rework_text, split_lines_ai, rework_ita_plus
+from parser import (parse_document, propose_colors, apply_colors,
+                    COLOR_META, split_at_max_chars)
+from ai import rework_text, split_sentences_smart, rework_ita_plus
 
 app = FastAPI(title="Soprattitoli Generator API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
 
 sessions: dict[str, list[dict]] = {}
 
@@ -53,11 +43,6 @@ class ColorAssignment(BaseModel):
 class ReworkRequest(BaseModel):
     sentences: list[str]
 
-class SplitRequest(BaseModel):
-    sentence: str
-    max_chars: int = 42
-    use_ai: bool = False
-
 class UpdateRow(BaseModel):
     session_id: str
     index: int
@@ -69,7 +54,7 @@ class ExportRequest(BaseModel):
 
 class ItaPlusProcess(BaseModel):
     session_id: str
-    column_index: int = 2   # indice colonna ITA (0-based), default 3a colonna
+    column_index: int = 2
 
 class ItaPlusUpdate(BaseModel):
     session_id: str
@@ -87,20 +72,20 @@ async def upload_file(file: UploadFile = File(...)):
     if not file.filename.endswith(".docx"):
         raise HTTPException(400, "Solo file .docx supportati.")
     content = await file.read()
-    session_id = str(uuid.uuid4())
-    tmp_dir = Path(tempfile.gettempdir()) / "soprattitoli"
-    tmp_dir.mkdir(exist_ok=True)
-    (tmp_dir / f"{session_id}.docx").write_bytes(content)
-    return {"session_id": session_id, "filename": file.filename}
+    sid = str(uuid.uuid4())
+    tmp = Path(tempfile.gettempdir()) / "soprattitoli"
+    tmp.mkdir(exist_ok=True)
+    (tmp / f"{sid}.docx").write_bytes(content)
+    return {"session_id": sid, "filename": file.filename}
 
 
-# ── ITA: Processa ──────────────────────────────────────────────────────────────
+# ── ITA: Processa + split AI ───────────────────────────────────────────────────
 
 @app.post("/api/process")
 async def process(criteria: Criteria):
     tmp_path = Path(tempfile.gettempdir()) / "soprattitoli" / f"{criteria.session_id}.docx"
     if not tmp_path.exists():
-        raise HTTPException(404, "Sessione non trovata. Ricarica il file.")
+        raise HTTPException(404, "Sessione non trovata.")
     try:
         rows = parse_document(str(tmp_path), {
             "name_caps":   criteria.name_caps,
@@ -110,10 +95,46 @@ async def process(criteria: Criteria):
             "sep_char":    criteria.sep_char,
             "desc_italic": criteria.desc_italic,
             "desc_parens": criteria.desc_parens,
-            "max_chars":   criteria.max_chars,
         })
     except Exception as e:
-        raise HTTPException(500, f"Errore elaborazione: {e}")
+        raise HTTPException(500, f"Errore parsing: {e}")
+
+    # Suddivisione intelligente con Gemini
+    sentences = [r["ita"] for r in rows]
+    try:
+        split_results = split_sentences_smart(sentences, criteria.max_chars)
+        expanded = []
+        for i, row in enumerate(rows):
+            lines = split_results[i] if i < len(split_results) else []
+            if not lines:
+                lines = [row["ita"]] if row["ita"] else []
+            if not lines:
+                expanded.append(row)
+                continue
+            for j, line in enumerate(lines):
+                expanded.append({
+                    "colore":      row["colore"],
+                    "personaggio": row["personaggio"],
+                    "ita":         line,
+                    "note":        row["note"] if j == 0 else "",
+                })
+        rows = expanded
+    except Exception:
+        # Fallback algoritmico se Gemini non disponibile
+        expanded = []
+        for row in rows:
+            if row["ita"]:
+                for j, line in enumerate(split_at_max_chars(row["ita"], criteria.max_chars)):
+                    expanded.append({
+                        "colore":      row["colore"],
+                        "personaggio": row["personaggio"],
+                        "ita":         line,
+                        "note":        row["note"] if j == 0 else "",
+                    })
+            else:
+                expanded.append(row)
+        rows = expanded
+
     sessions[criteria.session_id] = rows
     colors = propose_colors(rows)
     return {
@@ -131,9 +152,8 @@ async def set_colors(body: ColorAssignment):
     rows = sessions.get(body.session_id)
     if rows is None:
         raise HTTPException(404, "Sessione non trovata.")
-    updated = apply_colors(rows, body.assignments)
-    sessions[body.session_id] = updated
-    return {"rows": updated}
+    sessions[body.session_id] = apply_colors(rows, body.assignments)
+    return {"rows": sessions[body.session_id]}
 
 
 # ── ITA: Rielabora con AI ──────────────────────────────────────────────────────
@@ -146,21 +166,6 @@ async def rework(body: ReworkRequest):
         return {"reworked": rework_text(body.sentences)}
     except Exception as e:
         raise HTTPException(500, str(e))
-
-
-# ── ITA: Suddividi riga ────────────────────────────────────────────────────────
-
-@app.post("/api/split")
-async def split_line(body: SplitRequest):
-    """Suddivide una battuta in righe da max_chars. Algoritmo o AI."""
-    if body.use_ai:
-        try:
-            lines = split_lines_ai(body.sentence, body.max_chars)
-        except Exception as e:
-            raise HTTPException(500, str(e))
-    else:
-        lines = split_at_max_chars(body.sentence, body.max_chars)
-    return {"lines": lines}
 
 
 # ── ITA: Aggiorna riga ─────────────────────────────────────────────────────────
@@ -178,7 +183,7 @@ async def update_row(body: UpdateRow):
     return {"ok": True}
 
 
-# ── ITA: Esporta Excel ─────────────────────────────────────────────────────────
+# ── ITA: Esporta ───────────────────────────────────────────────────────────────
 
 @app.post("/api/export")
 async def export_excel(body: ExportRequest):
@@ -189,13 +194,12 @@ async def export_excel(body: ExportRequest):
     ws = wb.active
     ws.title = "Soprattitoli"
     ws.append(["Colore", "Personaggio", "ITA", "Note"])
-    hdr_fill = PatternFill(start_color="FF0D47A1", end_color="FF0D47A1", fill_type="solid")
-    hdr_font = Font(bold=True, color="FFFFFFFF")
+    hf = PatternFill(start_color="FF0D47A1", end_color="FF0D47A1", fill_type="solid")
     for cell in ws[1]:
-        cell.fill = hdr_fill
-        cell.font = hdr_font
-    align = Alignment(wrap_text=True, vertical="top")
-    for i, row in enumerate(rows, start=2):
+        cell.fill = hf
+        cell.font = Font(bold=True, color="FFFFFFFF")
+    al = Alignment(wrap_text=True, vertical="top")
+    for i, row in enumerate(rows, 2):
         ws.cell(i, 1, row.get("colore", ""))
         ws.cell(i, 2, row.get("personaggio", ""))
         ws.cell(i, 3, row.get("ita", ""))
@@ -203,66 +207,52 @@ async def export_excel(body: ExportRequest):
         ck = row.get("colore", "")
         if ck in COLOR_META:
             hx = COLOR_META[ck]["hex"].lstrip("#")
-            ws.cell(i, 1).fill = PatternFill(start_color=f"FF{hx}", end_color=f"FF{hx}", fill_type="solid")
-        for col in range(1, 5):
-            ws.cell(i, col).alignment = align
+            ws.cell(i, 1).fill = PatternFill(
+                start_color=f"FF{hx}", end_color=f"FF{hx}", fill_type="solid")
+        for c in range(1, 5):
+            ws.cell(i, c).alignment = al
     ws.column_dimensions["A"].width = 10
     ws.column_dimensions["B"].width = 22
     ws.column_dimensions["C"].width = 65
     ws.column_dimensions["D"].width = 32
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return StreamingResponse(
-        buffer,
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=soprattitoli.xlsx"}
-    )
+        headers={"Content-Disposition": "attachment; filename=soprattitoli.xlsx"})
 
 
-# ── ITA+: Upload Excel ─────────────────────────────────────────────────────────
+# ── ITA+: Upload ───────────────────────────────────────────────────────────────
 
 @app.post("/api/itaplus/upload")
 async def itaplus_upload(file: UploadFile = File(...)):
     if not file.filename.endswith((".xlsx", ".xls")):
-        raise HTTPException(400, "Solo file .xlsx supportati.")
+        raise HTTPException(400, "Solo .xlsx supportati.")
     content = await file.read()
-    session_id = str(uuid.uuid4())
-    tmp_dir = Path(tempfile.gettempdir()) / "soprattitoli"
-    tmp_dir.mkdir(exist_ok=True)
-    (tmp_dir / f"{session_id}_itaplus.xlsx").write_bytes(content)
-
-    # Leggi intestazioni per mostrare all'utente
+    sid = str(uuid.uuid4())
+    tmp = Path(tempfile.gettempdir()) / "soprattitoli"
+    tmp.mkdir(exist_ok=True)
+    (tmp / f"{sid}_itaplus.xlsx").write_bytes(content)
     wb = openpyxl.load_workbook(io.BytesIO(content))
     ws = wb.active
     headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
-    return {
-        "session_id": session_id,
-        "filename": file.filename,
-        "headers": headers,
-        "rows": ws.max_row - 1
-    }
+    return {"session_id": sid, "filename": file.filename,
+            "headers": headers, "rows": ws.max_row - 1}
 
 
-# ── ITA+: Processa (riformula con Gemini) ─────────────────────────────────────
+# ── ITA+: Processa ─────────────────────────────────────────────────────────────
 
 @app.post("/api/itaplus/process")
 async def itaplus_process(body: ItaPlusProcess):
     tmp_path = Path(tempfile.gettempdir()) / "soprattitoli" / f"{body.session_id}_itaplus.xlsx"
     if not tmp_path.exists():
         raise HTTPException(404, "File non trovato.")
-
     wb = openpyxl.load_workbook(str(tmp_path))
     ws = wb.active
-    col = body.column_index + 1  # 1-based
+    col = body.column_index + 1
+    sentences = [str(ws.cell(r, col).value or "") for r in range(2, ws.max_row + 1)]
 
-    # Raccogli tutte le frasi ITA
-    sentences = []
-    for r in range(2, ws.max_row + 1):
-        val = ws.cell(r, col).value
-        sentences.append(str(val) if val else "")
-
-    # Riformula con Gemini (solo frasi non vuote)
     non_empty = [(i, s) for i, s in enumerate(sentences) if s.strip()]
     reworked_map = {}
     if non_empty:
@@ -273,19 +263,17 @@ async def itaplus_process(body: ItaPlusProcess):
         except Exception as e:
             raise HTTPException(500, f"Errore Gemini: {e}")
 
-    # Costruisci lista di righe con originale + proposta
     rows_out = []
     for i, orig in enumerate(sentences):
         rows_out.append({
-            "index": i,
+            "index":    i,
             "original": orig,
             "proposed": reworked_map.get(i, orig),
-            "accepted": reworked_map.get(i, orig),  # editabile dall'utente
+            "accepted": reworked_map.get(i, orig),
         })
 
     sessions[f"{body.session_id}_itaplus"] = rows_out
     sessions[f"{body.session_id}_itaplus_col"] = body.column_index
-
     return {"rows": rows_out, "total": len(rows_out)}
 
 
@@ -303,40 +291,32 @@ async def itaplus_update(body: ItaPlusUpdate):
     return {"ok": True}
 
 
-# ── ITA+: Salva nel file Excel ─────────────────────────────────────────────────
+# ── ITA+: Salva ────────────────────────────────────────────────────────────────
 
 @app.post("/api/itaplus/save")
 async def itaplus_save(body: ItaPlusSave):
     key = f"{body.session_id}_itaplus"
     rows = sessions.get(key)
-    col_idx = sessions.get(f"{body.session_id}_itaplus_col", 2)
     if rows is None:
         raise HTTPException(404, "Sessione non trovata.")
-
     tmp_path = Path(tempfile.gettempdir()) / "soprattitoli" / f"{body.session_id}_itaplus.xlsx"
     wb = openpyxl.load_workbook(str(tmp_path))
     ws = wb.active
-
-    # Aggiungi intestazione colonna ITA+
     new_col = ws.max_column + 1
     ws.cell(1, new_col, "ITA+")
     ws.cell(1, new_col).font = Font(bold=True, color="FFFFFFFF")
-    ws.cell(1, new_col).fill = PatternFill(start_color="FF0D47A1", end_color="FF0D47A1", fill_type="solid")
-
+    ws.cell(1, new_col).fill = PatternFill(
+        start_color="FF0D47A1", end_color="FF0D47A1", fill_type="solid")
     for i, row in enumerate(rows):
         ws.cell(i + 2, new_col, row.get("accepted", ""))
         ws.cell(i + 2, new_col).alignment = Alignment(wrap_text=True, vertical="top")
-
-    ws.column_dimensions[openpyxl.utils.get_column_letter(new_col)].width = 55
-
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return StreamingResponse(
-        buffer,
+    ws.column_dimensions[get_column_letter(new_col)].width = 55
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=soprattitoli_itaplus.xlsx"}
-    )
+        headers={"Content-Disposition": "attachment; filename=soprattitoli_itaplus.xlsx"})
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
