@@ -1,5 +1,5 @@
 """
-ai.py – Integrazione Google Gemini con gemini-1.5-flash su API v1.
+ai.py – Integrazione Google Gemini con gemini-2.5-flash su API v1beta.
 """
 
 import os
@@ -7,10 +7,10 @@ import json
 import urllib.request
 import urllib.error
 
-# API v1 (stabile) + gemini-1.5-flash
+# API v1beta + gemini-2.5-flash
 GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1/models/"
-    "gemini-1.5-flash:generateContent"
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.5-flash:generateContent"
 )
 
 REGOLE_BASE = """REGOLE DI FORMATTAZIONE (obbligatorie):
