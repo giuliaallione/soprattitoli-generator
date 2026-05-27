@@ -1,5 +1,6 @@
 """
-ai.py – Integrazione Google Gemini con gemini-2.5-flash su API v1beta.
+ai.py – Integrazione Google Gemini 2.5 Flash.
+Usa responseMimeType: application/json per output JSON affidabile.
 """
 
 import os
@@ -7,7 +8,6 @@ import json
 import urllib.request
 import urllib.error
 
-# API v1beta + gemini-2.5-flash
 GEMINI_API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-2.5-flash:generateContent"
@@ -19,11 +19,12 @@ REGOLE_BASE = """REGOLE DI FORMATTAZIONE (obbligatorie):
 3. I due punti si usano SOLO per i discorsi diretti, seguiti da uno spazio singolo.
 4. Il punto e virgola NON è consentito. Sostituiscilo con una virgola o spezza la frase.
 5. I tre puntini di sospensione si usano SOLO per frasi volutamente incomplete.
-6. Cambia il presente progressivo in presente semplice: "Sto piangendo" → "Piango".
+6. Cambia il presente progressivo in presente semplice: 'Sto piangendo' diventa 'Piango'.
 7. Preferisci l'ordine soggetto-verbo-complemento.
 8. NON saltare né censurare alcuna frase.
 9. La divisione tra le righe deve rispettare la grammatica italiana.
-10. Nessuna punteggiatura finale aggiunta."""
+10. Nessuna punteggiatura finale aggiunta.
+11. Se devi usare virgolette all'interno di una frase, usa SOLO gli apici singoli (') e MAI le virgolette doppie (")."""
 
 SPLIT_SMART_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
 Ricevi un elenco numerato di battute. Per ciascuna:
@@ -32,19 +33,17 @@ Ricevi un elenco numerato di battute. Per ciascuna:
 
 {REGOLE_BASE}
 
-Rispondi ESCLUSIVAMENTE con un oggetto JSON:
+Rispondi con un oggetto JSON:
 {{"results": [["riga1"], ["riga1", "riga2"], ...]}}
-Ogni elemento corrisponde alla battuta con lo stesso indice.
-Nessun testo aggiuntivo, nessun backtick."""
+Ogni elemento corrisponde alla battuta con lo stesso indice."""
 
 REWORK_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
 Rielabora le battute elencate applicando queste regole.
 
 {REGOLE_BASE}
 
-Rispondi ESCLUSIVAMENTE con un array JSON di stringhe.
-Esempio: ["Prima riga", "Seconda riga se necessario"]
-Nessun testo aggiuntivo, nessun backtick."""
+Rispondi con un array JSON di stringhe.
+Esempio: ["Prima riga", "Seconda riga se necessario"]"""
 
 ITA_PLUS_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
 Riformula le frasi per la colonna ITA+ applicando queste regole.
@@ -53,8 +52,16 @@ Puoi riscrivere liberamente mantenendo il significato.
 {REGOLE_BASE}
 - Massimo 37 caratteri per riga in questo percorso.
 
-Rispondi ESCLUSIVAMENTE con un array JSON di stringhe.
-Nessun testo aggiuntivo, nessun backtick."""
+Rispondi con un array JSON di stringhe.
+Esempio: ["Prima riga riformulata", "Seconda riga se necessario"]"""
+
+# generationConfig comune con JSON mode
+def _gen_config(max_tokens: int = 4096, temp: float = 0.2) -> dict:
+    return {
+        "temperature": temp,
+        "maxOutputTokens": max_tokens,
+        "responseMimeType": "application/json",
+    }
 
 
 def _call_gemini(payload: dict) -> dict:
@@ -77,11 +84,7 @@ def _call_gemini(payload: dict) -> dict:
 
 def _extract_text(body: dict) -> str:
     try:
-        text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
-        text = text.strip("`").strip()
-        if text.startswith("json"):
-            text = text[4:].strip()
-        return text
+        return body["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
         raise RuntimeError(f"Risposta Gemini non valida: {e}\n{body}")
 
@@ -96,19 +99,16 @@ def split_sentences_smart(sentences: list[str], max_chars: int = 42) -> list[lis
     )
     payload = {
         "contents": [{"parts": [{"text": SPLIT_SMART_PROMPT + "\n\n" + user_text}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 8192}
+        "generationConfig": _gen_config(max_tokens=8192, temp=0.1),
     }
     body = _call_gemini(payload)
     raw = _extract_text(body)
 
     try:
         parsed = json.loads(raw)
-        results_list = parsed.get("results", [])
-    except Exception:
-        try:
-            results_list = json.loads(raw)
-        except Exception as e:
-            raise RuntimeError(f"Risposta split non valida: {e}\n{raw}")
+        results_list = parsed.get("results", []) if isinstance(parsed, dict) else parsed
+    except Exception as e:
+        raise RuntimeError(f"Risposta split non valida: {e}\n{raw}")
 
     result_map = {}
     for pos, (orig_i, orig_s) in enumerate(indexed):
@@ -125,7 +125,7 @@ def rework_text(sentences: list[str]) -> list[str]:
     user_text = "Rielabora:\n\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
     payload = {
         "contents": [{"parts": [{"text": REWORK_PROMPT + "\n\n" + user_text}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}
+        "generationConfig": _gen_config(),
     }
     body = _call_gemini(payload)
     result = json.loads(_extract_text(body))
@@ -136,7 +136,7 @@ def rework_ita_plus(sentences: list[str]) -> list[str]:
     user_text = "Riformula:\n\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
     payload = {
         "contents": [{"parts": [{"text": ITA_PLUS_PROMPT + "\n\n" + user_text}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}
+        "generationConfig": _gen_config(),
     }
     body = _call_gemini(payload)
     result = json.loads(_extract_text(body))
