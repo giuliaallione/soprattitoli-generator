@@ -1,10 +1,11 @@
 """
 ai.py – Integrazione Google Gemini 2.5 Flash.
-Usa responseMimeType: application/json per output JSON affidabile.
+Retry automatico con exponential backoff per errori 503/429.
 """
 
 import os
 import json
+import time
 import urllib.request
 import urllib.error
 
@@ -55,7 +56,7 @@ Puoi riscrivere liberamente mantenendo il significato.
 Rispondi con un array JSON di stringhe.
 Esempio: ["Prima riga riformulata", "Seconda riga se necessario"]"""
 
-# generationConfig comune con JSON mode
+
 def _gen_config(max_tokens: int = 4096, temp: float = 0.2) -> dict:
     return {
         "temperature": temp,
@@ -64,22 +65,39 @@ def _gen_config(max_tokens: int = 4096, temp: float = 0.2) -> dict:
     }
 
 
-def _call_gemini(payload: dict) -> dict:
+def _call_gemini(payload: dict, max_retries: int = 5) -> dict:
+    """Chiama Gemini con retry automatico ed exponential backoff."""
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         raise ValueError("GEMINI_API_KEY non configurata.")
+
     url = f"{GEMINI_API_URL}?key={api_key}"
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Errore Gemini ({e.code}): {e.read().decode()}")
+
+    last_error = None
+    for attempt in range(max_retries):
+        if attempt > 0:
+            wait = 2 ** attempt  # 2, 4, 8, 16 secondi
+            time.sleep(wait)
+
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode()
+            last_error = f"Errore Gemini ({e.code}): {error_body}"
+            # Retry solo su 503 (server sovraccarico) e 429 (quota)
+            if e.code in (503, 429):
+                continue
+            # Su altri errori (404, 400...) fallisci subito
+            raise RuntimeError(last_error)
+
+    raise RuntimeError(f"Gemini non disponibile dopo {max_retries} tentativi. {last_error}")
 
 
 def _extract_text(body: dict) -> str:
