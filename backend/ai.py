@@ -123,7 +123,7 @@ def split_sentences_smart(sentences: list[str], max_chars: int = 42) -> list[lis
     raw = _extract_text(body)
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(raw, strict=False)
         results_list = parsed.get("results", []) if isinstance(parsed, dict) else parsed
     except Exception as e:
         raise RuntimeError(f"Risposta split non valida: {e}\n{raw}")
@@ -146,7 +146,7 @@ def rework_text(sentences: list[str]) -> list[str]:
         "generationConfig": _gen_config(),
     }
     body = _call_gemini(payload)
-    result = json.loads(_extract_text(body))
+    result = json.loads(_extract_text(body), strict=False)
     return [str(s) for s in result] if isinstance(result, list) else [str(result)]
 
 
@@ -157,5 +157,5 @@ def rework_ita_plus(sentences: list[str]) -> list[str]:
         "generationConfig": _gen_config(),
     }
     body = _call_gemini(payload)
-    result = json.loads(_extract_text(body))
+    result = json.loads(_extract_text(body), strict=False)
     return [str(s) for s in result] if isinstance(result, list) else [str(result)]
