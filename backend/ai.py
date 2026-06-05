@@ -14,47 +14,47 @@ GEMINI_API_URL = (
     "gemini-2.5-flash:generateContent"
 )
 
-REGOLE_BASE = """REGOLE DI FORMATTAZIONE (obbligatorie):
-1. Ogni riga ha MASSIMO 42 caratteri, spazi compresi.
-2. I numeri da zero a dieci si scrivono in lettere. I numeri maggiori di dieci in cifre arabe. Qualsiasi numero a inizio frase va scritto in lettere.
-3. I due punti si usano SOLO per i discorsi diretti, seguiti da uno spazio singolo.
-4. Il punto e virgola NON è consentito. Sostituiscilo con una virgola o spezza la frase.
-5. I tre puntini di sospensione si usano SOLO per frasi volutamente incomplete.
-6. Cambia il presente progressivo in presente semplice: 'Sto piangendo' diventa 'Piango'.
-7. Preferisci l'ordine soggetto-verbo-complemento.
-8. NON saltare né censurare alcuna frase.
-9. La divisione tra le righe deve rispettare la grammatica italiana.
-10. Nessuna punteggiatura finale aggiunta.
-11. Se devi usare virgolette all'interno di una frase, usa SOLO gli apici singoli (') e MAI le virgolette doppie (")."""
+# Nuove regole rigorose per il percorso ITA
+REGOLE_ITA = """REGOLE DI FORMATTAZIONE (obbligatorie):
+1. Massimo due righe per sottotitolo.
+2. Massimo 40 caratteri, spazi compresi, per riga.
+3. Ogni sottotitolo deve contenere un'unità linguistica di senso compiuto, senza penalizzare nessi logici e fluidità.
+4. La divisione tra le righe deve avvenire tra principale e subordinata o in corrispondenza di una congiunzione.
+5. DIVIETI DI DIVISIONE: La divisione tra le righe NON deve MAI avvenire tra articolo e sostantivo, preposizione e sostantivo, aggettivo e sostantivo, soggetto e verbo, ausiliare e verbo, qualifica e nome proprio.
+6. I numeri da zero a dieci vanno scritti in lettere. I numeri maggiori di dieci in numeri arabi. Qualsiasi numero a inizio frase va scritto in lettere.
+7. Il simbolo "-" si utilizza a inizio delle due righe per distinguere due parlanti nello stesso sottotitolo, seguito da uno spazio singolo; ogni riga può contenere un parlante solo.
+8. I due punti si utilizzano unicamente per i discorsi diretti e sono seguiti da uno spazio singolo.
+9. Le virgolette (ad esempio per i discorsi diretti) sono sempre basse (« »).
+10. Il trattino alto si usa per aprire un virgolettato dentro a frasi già tra virgolette.
+11. L'uso del punto e virgola NON è consentito.
+12. NON saltare né censurare frasi."""
 
-SPLIT_SMART_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
-Ricevi un elenco numerato di battute. Per ciascuna:
-- Se già entro 42 caratteri, restituiscila invariata
-- Se più lunga, dividila in righe di senso compiuto di max 42 caratteri
-
-{REGOLE_BASE}
-
-Rispondi con un oggetto JSON:
-{{"results": [["riga1"], ["riga1", "riga2"], ...]}}
-Ogni elemento corrisponde alla battuta con lo stesso indice."""
-
+# Prompt specifico per la colonna ITA (strutturato per Excel)
 REWORK_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
-Rielabora le battute elencate applicando queste regole.
+Ricevi un testo narrativo o teatrale. Devi strutturare i dati per un file Excel a due colonne.
 
-{REGOLE_BASE}
+{REGOLE_ITA}
 
-Rispondi con un array JSON di stringhe.
-Esempio: ["Prima riga", "Seconda riga se necessario"]"""
+Estrai il personaggio e il testo e rispondi ESCLUSIVAMENTE con un array JSON di oggetti.
+Ogni oggetto deve avere due chiavi:
+- "personaggio": il nome del personaggio in MAIUSCOLO.
+- "testo": la battuta che rispetta rigorosamente le regole di 40 caratteri. Se divisa in due righe, usa il carattere speciale '\\n' per andare a capo.
 
-ITA_PLUS_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
-Riformula le frasi per la colonna ITA+ applicando queste regole.
-Puoi riscrivere liberamente mantenendo il significato.
+Esempio di output JSON atteso:
+[
+  {{
+    "personaggio": "NOME PERSONAGGIO",
+    "testo": "Prima riga del sottotitolo\\nSeconda riga del sottotitolo"
+  }}
+]"""
 
-{REGOLE_BASE}
-- Massimo 37 caratteri per riga in questo percorso.
+# Prompt per lo split base (se lo usi ancora per altri percorsi)
+SPLIT_SMART_PROMPT = f"""Sei un esperto di soprattitoli teatrali.
+Dividi o formatta le seguenti battute rispettando queste regole.
 
-Rispondi con un array JSON di stringhe.
-Esempio: ["Prima riga riformulata", "Seconda riga se necessario"]"""
+{REGOLE_ITA}
+
+Rispondi con un array JSON di stringhe, ad esempio: ["riga unica", "riga 1\\nriga 2"]"""
 
 
 def _gen_config(max_tokens: int = 4096, temp: float = 0.2) -> dict:
@@ -107,14 +107,31 @@ def _extract_text(body: dict) -> str:
         raise RuntimeError(f"Risposta Gemini non valida: {e}\n{body}")
 
 
-def split_sentences_smart(sentences: list[str], max_chars: int = 42) -> list[list[str]]:
-    indexed = [(i, s) for i, s in enumerate(sentences) if s and s.strip()]
-    if not indexed:
-        return [[] for _ in sentences]
+def rework_text(sentences: list[str]) -> list[dict]:
+    """
+    Elabora le frasi per il percorso ITA e restituisce una lista di dizionari 
+    con le chiavi 'personaggio' e 'testo', pronti per l'export in Excel.
+    """
+    user_text = "Elabora questo testo:\n\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
+    payload = {
+        "contents": [{"parts": [{"text": REWORK_PROMPT + "\n\n" + user_text}]}],
+        "generationConfig": _gen_config(temp=0.1),
+    }
+    
+    body = _call_gemini(payload)
+    raw_text = _extract_text(body)
+    
+    try:
+        # strict=False gestisce in sicurezza gli "a capo" nascosti che facevano esplodere il parser
+        result = json.loads(raw_text, strict=False)
+        return result if isinstance(result, list) else [result]
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Errore di parsing del JSON di Gemini: {e}\nTesto grezzo:\n{raw_text}")
 
-    user_text = "Elabora queste battute:\n\n" + "\n".join(
-        f"{i}. {s}" for i, s in indexed
-    )
+
+def split_sentences_smart(sentences: list[str]) -> list[str]:
+    # (Mantenuto compatibile qualora venisse usato in altre rotte)
+    user_text = "\n".join(f"{i}. {s}" for i, s in enumerate(sentences) if s and s.strip())
     payload = {
         "contents": [{"parts": [{"text": SPLIT_SMART_PROMPT + "\n\n" + user_text}]}],
         "generationConfig": _gen_config(max_tokens=8192, temp=0.1),
@@ -124,38 +141,6 @@ def split_sentences_smart(sentences: list[str], max_chars: int = 42) -> list[lis
 
     try:
         parsed = json.loads(raw, strict=False)
-        results_list = parsed.get("results", []) if isinstance(parsed, dict) else parsed
+        return parsed if isinstance(parsed, list) else [str(parsed)]
     except Exception as e:
         raise RuntimeError(f"Risposta split non valida: {e}\n{raw}")
-
-    result_map = {}
-    for pos, (orig_i, orig_s) in enumerate(indexed):
-        if pos < len(results_list):
-            val = results_list[pos]
-            result_map[orig_i] = [str(r) for r in val if str(r).strip()] if isinstance(val, list) else [str(val)]
-        else:
-            result_map[orig_i] = [orig_s]
-
-    return [result_map.get(i, [s] if s else []) for i, s in enumerate(sentences)]
-
-
-def rework_text(sentences: list[str]) -> list[str]:
-    user_text = "Rielabora:\n\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
-    payload = {
-        "contents": [{"parts": [{"text": REWORK_PROMPT + "\n\n" + user_text}]}],
-        "generationConfig": _gen_config(),
-    }
-    body = _call_gemini(payload)
-    result = json.loads(_extract_text(body), strict=False)
-    return [str(s) for s in result] if isinstance(result, list) else [str(result)]
-
-
-def rework_ita_plus(sentences: list[str]) -> list[str]:
-    user_text = "Riformula:\n\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
-    payload = {
-        "contents": [{"parts": [{"text": ITA_PLUS_PROMPT + "\n\n" + user_text}]}],
-        "generationConfig": _gen_config(),
-    }
-    body = _call_gemini(payload)
-    result = json.loads(_extract_text(body), strict=False)
-    return [str(s) for s in result] if isinstance(result, list) else [str(result)]
