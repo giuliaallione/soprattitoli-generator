@@ -31,14 +31,25 @@ REGOLE_ITA = """REGOLE DI FORMATTAZIONE (obbligatorie):
 12. NON saltare né censurare frasi."""
 
 # Prompt specifico per la colonna ITA (strutturato per Excel e Chunking)
-REWORK_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
-Ricevi un elenco numerato di battute. Devi formattarle applicando QUESTE REGOLE:
+REWORK_PROMPT = f"""Sei un linguista esperto di soprattitoli teatrali italiani.
+Ricevi un elenco numerato di battute. Devi formattarle applicando QUESTE REGOLE, rispettando rigorosamente questo ordine di importanza:
 
-{REGOLE_ITA}
+PRIORITÀ ASSOLUTA 1 (Grammatica, Pause Logiche e Senso):
+- DIVIETI DI DIVISIONE: La divisione tra le righe NON DEVE MAI avvenire tra articolo e sostantivo (es. "un / angelo" è un errore gravissimo), preposizione e sostantivo, aggettivo e sostantivo, soggetto e verbo, ausiliare e verbo principale (es. "è / annegato" è un errore gravissimo), qualifica e nome proprio.
+- La divisione a capo deve rispettare i nessi logici naturali (es. dopo virgole, punti, congiunzioni, o tra principale e subordinata).
+- REQUISITO DI FLESSIBILITÀ: Sei esplicitamente autorizzato a superare il limite di 40 caratteri su una riga (fino a un massimo di 45-46 caratteri) se questo serve a evitare l'infrazione di una regola grammaticale o la rottura di una parola! È molto meglio avere una riga di 44 caratteri e una di 15, piuttosto che un taglio errato a 40 caratteri che distrugge la sintassi.
+
+PRIORITÀ 2 (Lunghezza e Formato):
+- Cerca di stare entro i 40 caratteri per riga, spazi compresi, ma SOLO se la Priorità 1 è pienamente rispettata.
+- Massimo due righe per sottotitolo. Usa il carattere speciale '\\n' per andare a capo all'interno della stringa.
+
+ALTRE REGOLE:
+- I numeri da zero a dieci vanno scritti in lettere. I numeri maggiori di dieci in numeri arabi. Qualsiasi numero a inizio frase va scritto in lettere.
+- Il simbolo "-" si usa a inizio riga per distinguere due parlanti nello stesso sottotitolo.
+- Virgolette basse (« »). Il punto e virgola NON è consentito.
 
 Rispondi ESCLUSIVAMENTE con un oggetto JSON dove le chiavi sono gli indici originali forniti nel testo e i valori sono le battute formattate.
 MANTENI GLI INDICI ESATTI CHE TI VENGONO FORNITI.
-Se devi dividere in due righe, usa il carattere speciale '\\n' per andare a capo all'interno della stessa stringa.
 
 Esempio di output:
 {{
@@ -93,7 +104,7 @@ def _call_gemini(payload: dict, max_retries: int = 5) -> dict:
         except urllib.error.HTTPError as e:
             error_body = e.read().decode()
             last_error = f"Errore Gemini ({e.code}): {error_body}"
-            # Retry solo su 503 (server sovraccarico) e 429 (quota)
+            # Retry solo su 503 (server sovraccarico) e 429 (quota/crediti)
             if e.code in (503, 429):
                 continue
             # Su altri errori (404, 400...) fallisci subito
@@ -118,12 +129,12 @@ def rework_text(indexed_sentences: list[tuple[int, str]]) -> dict[int, str]:
     if not indexed_sentences:
         return {}
 
-    chunk_size = 50 # Elabora 50 frasi alla volta
+    chunk_size = 60 # Bilanciamento perfetto: preciso sulla grammatica e veloce contro il timeout
     result_map = {}
 
     for i in range(0, len(indexed_sentences), chunk_size):
         chunk = indexed_sentences[i:i+chunk_size]
-        # Passiamo a Gemini il SUO vero indice, es: "14. Ciao mondo"
+        # Passiamo a Gemini il suo vero indice originale, es: "14. Ciao mondo"
         user_text = "\n".join(f"{idx}. {s}" for idx, s in chunk)
         payload = {
             "contents": [{"parts": [{"text": REWORK_PROMPT + "\n\n" + user_text}]}],
@@ -138,7 +149,7 @@ def rework_text(indexed_sentences: list[tuple[int, str]]) -> dict[int, str]:
                 result_map[int(k)] = str(v)
         except Exception as e:
             print(f"Errore chunk da indice {chunk[0][0]}: {e}")
-            # Se fallisce un piccolo blocco, mantiene l'originale
+            # Se fallisce un piccolo blocco, mantiene l'originale intatto
             for idx, s in chunk:
                 result_map[idx] = s
 
