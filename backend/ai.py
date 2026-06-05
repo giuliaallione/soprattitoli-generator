@@ -36,23 +36,16 @@ Ricevi un elenco numerato di battute. Devi formattarle applicando QUESTE REGOLE:
 
 {REGOLE_ITA}
 
-Rispondi ESCLUSIVAMENTE con un oggetto JSON dove le chiavi sono gli indici originali e i valori sono le battute formattate.
+Rispondi ESCLUSIVAMENTE con un oggetto JSON dove le chiavi sono gli indici originali forniti nel testo e i valori sono le battute formattate.
+MANTENI GLI INDICI ESATTI CHE TI VENGONO FORNITI.
 Se devi dividere in due righe, usa il carattere speciale '\\n' per andare a capo all'interno della stessa stringa.
 
 Esempio di output:
 {{
-  "0": "Prima riga del sottotitolo\\nSeconda riga del sottotitolo",
-  "1": "Sottotitolo corto su una riga sola",
-  "2": "Altra battuta lunga\\nche va a capo qui"
+  "45": "Prima riga del sottotitolo\\nSeconda riga del sottotitolo",
+  "46": "Sottotitolo corto su una riga sola",
+  "49": "Altra battuta lunga\\nche va a capo qui"
 }}"""
-
-# Prompt per lo split base (se lo usi ancora per altri percorsi)
-SPLIT_SMART_PROMPT = f"""Sei un esperto di soprattitoli teatrali.
-Dividi o formatta le seguenti battute rispettando queste regole.
-
-{REGOLE_ITA}
-
-Rispondi con un array JSON di stringhe, ad esempio: ["riga unica", "riga 1\\nriga 2"]"""
 
 # Prompt per il percorso ITA+
 ITA_PLUS_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
@@ -116,17 +109,21 @@ def _extract_text(body: dict) -> str:
         raise RuntimeError(f"Risposta Gemini non valida: {e}\n{body}")
 
 
-def rework_text(sentences: list[str]) -> list[str]:
-    """Elabora le frasi a scaglioni (chunk) per evitare limiti di token."""
-    indexed = [(i, s) for i, s in enumerate(sentences) if s and s.strip()]
-    if not indexed:
-        return sentences
+def rework_text(indexed_sentences: list[tuple[int, str]]) -> dict[int, str]:
+    """
+    Elabora le frasi a scaglioni (chunk).
+    Riceve una lista di tuple (indice_originale, testo) per evitare sfasamenti.
+    Restituisce un dizionario {indice_originale: testo_riformulato}.
+    """
+    if not indexed_sentences:
+        return {}
 
     chunk_size = 50 # Elabora 50 frasi alla volta
     result_map = {}
 
-    for i in range(0, len(indexed), chunk_size):
-        chunk = indexed[i:i+chunk_size]
+    for i in range(0, len(indexed_sentences), chunk_size):
+        chunk = indexed_sentences[i:i+chunk_size]
+        # Passiamo a Gemini il SUO vero indice, es: "14. Ciao mondo"
         user_text = "\n".join(f"{idx}. {s}" for idx, s in chunk)
         payload = {
             "contents": [{"parts": [{"text": REWORK_PROMPT + "\n\n" + user_text}]}],
@@ -140,29 +137,12 @@ def rework_text(sentences: list[str]) -> list[str]:
             for k, v in parsed.items():
                 result_map[int(k)] = str(v)
         except Exception as e:
-            print(f"Errore chunk da {i}: {e}")
-            # Se fallisce un piccolo blocco, mantiene l'originale solo per quello
+            print(f"Errore chunk da indice {chunk[0][0]}: {e}")
+            # Se fallisce un piccolo blocco, mantiene l'originale
             for idx, s in chunk:
                 result_map[idx] = s
 
-    # Ricostruisce la lista nell'ordine originale, inserendo gli "a capo" corretti
-    return [result_map.get(i, s) for i, s in enumerate(sentences)]
-
-
-def split_sentences_smart(sentences: list[str]) -> list[str]:
-    user_text = "\n".join(f"{i}. {s}" for i, s in enumerate(sentences) if s and s.strip())
-    payload = {
-        "contents": [{"parts": [{"text": SPLIT_SMART_PROMPT + "\n\n" + user_text}]}],
-        "generationConfig": _gen_config(),
-    }
-    body = _call_gemini(payload)
-    raw = _extract_text(body)
-
-    try:
-        parsed = json.loads(raw, strict=False)
-        return parsed if isinstance(parsed, list) else [str(parsed)]
-    except Exception as e:
-        raise RuntimeError(f"Risposta split non valida: {e}\n{raw}")
+    return result_map
 
 
 def rework_ita_plus(sentences: list[str]) -> list[str]:
