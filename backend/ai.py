@@ -144,3 +144,30 @@ def split_sentences_smart(sentences: list[str]) -> list[str]:
         return parsed if isinstance(parsed, list) else [str(parsed)]
     except Exception as e:
         raise RuntimeError(f"Risposta split non valida: {e}\n{raw}")
+
+# ── AGGIUNGI IN FONDO AL FILE ai.py ──
+
+ITA_PLUS_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
+Riformula le frasi per la colonna ITA+ applicando queste regole.
+Puoi riscrivere liberamente mantenendo il significato.
+
+{REGOLE_ITA}
+- Massimo 37 caratteri per riga in questo percorso.
+
+Rispondi con un array JSON di stringhe.
+Esempio: ["Prima riga riformulata", "Seconda riga se necessario"]"""
+
+def rework_ita_plus(sentences: list[str]) -> list[str]:
+    user_text = "Riformula:\n\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
+    payload = {
+        "contents": [{"parts": [{"text": ITA_PLUS_PROMPT + "\n\n" + user_text}]}],
+        "generationConfig": _gen_config(),
+    }
+    body = _call_gemini(payload)
+    raw_text = _extract_text(body)
+    try:
+        # Il strict=False ti salva dagli "a capo" indesiderati
+        result = json.loads(raw_text, strict=False)
+        return [str(s) for s in result] if isinstance(result, list) else [str(result)]
+    except Exception as e:
+        raise RuntimeError(f"Errore di parsing del JSON in ITA+: {e}\nTesto grezzo:\n{raw_text}")
