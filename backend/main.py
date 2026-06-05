@@ -1,5 +1,5 @@
 """
-main.py – FastAPI. Dopo il parsing chiama Gemini per formattazione e chunking.
+main.py – FastAPI. Dopo il parsing chiama Gemini per formattazione e chunking in modo sicuro.
 """
 
 import os, io, uuid, tempfile
@@ -14,7 +14,7 @@ from openpyxl.utils import get_column_letter
 
 from parser import (parse_document, propose_colors, apply_colors,
                     COLOR_META, split_at_max_chars)
-from ai import rework_text, split_sentences_smart, rework_ita_plus
+from ai import rework_text, rework_ita_plus
 
 app = FastAPI(title="Soprattitoli Generator API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -98,26 +98,37 @@ async def process(criteria: Criteria):
     except Exception as e:
         raise HTTPException(500, f"Errore parsing: {e}")
 
-    sentences_to_process = [r["ita"] for r in rows_from_parser if r.get("ita")]
-    expanded = []
+    # Estraiamo le frasi accoppiandole al loro VERO indice originale
+    indexed_sentences = [(i, r["ita"]) for i, r in enumerate(rows_from_parser) if r.get("ita") and r["ita"].strip()]
     
     try:
-        # L'AI ci restituisce una lista di testi formattati con gli "a capo" (\n)
-        ai_results = rework_text(sentences_to_process)
+        # L'AI ci restituisce un dizionario: {indice_originale: "testo \n formattato"}
+        ai_results_map = rework_text(indexed_sentences)
         
-        for row_parser, testo_ai in zip(rows_from_parser, ai_results):
-            # Mettiamo in MAIUSCOLO il personaggio in modo infallibile
+        # Ricostruiamo la lista finale senza sfasare didascalie e battute!
+        expanded = []
+        for i, row_parser in enumerate(rows_from_parser):
+            
+            # Formatta il nome in maiuscolo
             personaggio_upper = row_parser.get("personaggio", "").upper()
             
+            # Se la riga era una battuta (e AI l'ha elaborata), prendi il testo di AI
+            if i in ai_results_map:
+                testo_finale = ai_results_map[i]
+            else:
+                # Altrimenti (es. didascalia) lascia l'originale (che spesso è vuoto o ha solo le note)
+                testo_finale = row_parser.get("ita", "")
+                
             expanded.append({
                 "colore":      row_parser.get("colore", ""),
                 "personaggio": personaggio_upper,
-                "ita":         testo_ai,
+                "ita":         testo_finale,
                 "note":        row_parser.get("note", "")
             })
             
     except Exception as e:
         print(f"Errore Gemini durante process, uso fallback: {e}")
+        expanded = []
         for row in rows_from_parser:
             if row["ita"]:
                 for j, line in enumerate(split_at_max_chars(row["ita"], criteria.max_chars)):
@@ -159,7 +170,11 @@ async def rework(body: ReworkRequest):
     if not body.sentences:
         raise HTTPException(400, "Nessuna battuta.")
     try:
-        return {"reworked": rework_text(body.sentences)}
+        # Crea indici finti per riutilizzare la funzione
+        indexed = [(i, s) for i, s in enumerate(body.sentences)]
+        res_map = rework_text(indexed)
+        # Riporta il dizionario a una lista per questa specifica chiamata
+        return {"reworked": [res_map.get(i, orig) for i, orig in enumerate(body.sentences)]}
     except Exception as e:
         raise HTTPException(500, str(e))
 
