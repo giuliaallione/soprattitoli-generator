@@ -1,7 +1,7 @@
 """
 parser.py – Logica di parsing del copione.
 Supporta nomi in MAIUSCOLO, GRASSETTO, o criterio custom.
-Estrae le battute intere per delegare la formattazione a Gemini o al Fallback.
+Divide le battute in base alla punteggiatura forte (punti, esclamativi) e le passa a Gemini.
 """
 
 import re
@@ -24,12 +24,15 @@ def is_para_italic(para):
     runs = [r for r in para.runs if r.text.strip()]
     return bool(runs) and all(r.italic for r in runs)
 
+def split_sentences(text):
+    """Divide il testo in frasi logiche usando i punti, esclamativi e interrogativi."""
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [p.strip() for p in parts if p.strip()]
 
 def extract_inline_parens(text):
     notes = re.findall(r'\(([^)]+)\)', text)
     clean = re.sub(r'\s*\([^)]+\)', '', text).strip()
     return clean, '; '.join(notes)
-
 
 def is_caps(text):
     words = text.split()
@@ -37,7 +40,6 @@ def is_caps(text):
             and all(w == w.upper() for w in words)
             and any(c.isalpha() for c in text)
             and len(words) <= 6)
-
 
 def get_bold_prefix(para):
     """Estrae nome in grassetto + resto testo normale dalla stessa riga."""
@@ -74,7 +76,7 @@ def parse_document(path: str, criteria: dict) -> list[dict]:
     desc_parens = criteria.get('desc_parens', True)
 
     def add_rows(char, ita, note=''):
-        """Aggiunge la riga INTERA senza tagliarla."""
+        """Aggiunge la riga INTERA senza tagliarla meccanicamente a 42 caratteri."""
         rows.append({'colore': '', 'personaggio': char or '', 'ita': ita, 'note': note})
 
     for para in doc.paragraphs:
@@ -144,14 +146,16 @@ def parse_document(path: str, criteria: dict) -> list[dict]:
         if not dialogue:
             continue
 
-        # Estrae le note tra parentesi nella battuta e inserisce la battuta intera
-        if desc_parens:
-            clean_s, inline_note = extract_inline_parens(dialogue)
-        else:
-            clean_s, inline_note = dialogue, ''
-            
-        if clean_s:
-            add_rows(current_char, clean_s, inline_note)
+        # Ripristinata la divisione per frasi logiche! (Punti, esclamativi, ecc.)
+        sentences = split_sentences(dialogue)
+        for sentence in sentences:
+            if desc_parens:
+                clean_s, inline_note = extract_inline_parens(sentence)
+            else:
+                clean_s, inline_note = sentence, ''
+                
+            if clean_s:
+                add_rows(current_char, clean_s, inline_note)
 
     return rows
 
