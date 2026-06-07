@@ -15,13 +15,13 @@ GEMINI_API_URL = (
     "gemini-2.5-flash:generateContent"
 )
 
-# Nuove regole rigorose per il percorso ITA
+# Regole rigorose di base
 REGOLE_ITA = """REGOLE DI FORMATTAZIONE (obbligatorie):
 1. Massimo due righe per sottotitolo.
-2. Massimo 40 caratteri, spazi compresi, per riga.
+2. Massimo 42 caratteri (spazi compresi) per riga. Questo limite è TASSATIVO e non ammette eccezioni.
 3. Ogni sottotitolo deve contenere un'unità linguistica di senso compiuto, senza penalizzare nessi logici e fluidità.
 4. La divisione tra le righe deve avvenire tra principale e subordinata o in corrispondenza di una congiunzione.
-5. DIVIETI DI DIVISIONE: La divisione tra le righe NON deve MAI avvenire tra articolo e sostantivo, preposizione e sostantivo, aggettivo e sostantivo, soggetto e verbo, ausiliare e verbo, qualifica e nome proprio.
+5. DIVIETI DI DIVISIONE ASSOLUTI: La divisione tra le righe NON deve MAI avvenire tra articolo e sostantivo, preposizione e sostantivo, aggettivo e sostantivo, soggetto e verbo, ausiliare e verbo, qualifica e nome proprio.
 6. I numeri da zero a dieci vanno scritti in lettere. I numeri maggiori di dieci in numeri arabi. Qualsiasi numero a inizio frase va scritto in lettere.
 7. Il simbolo "-" si utilizza a inizio delle due righe per distinguere due parlanti nello stesso sottotitolo, seguito da uno spazio singolo; ogni riga può contenere un parlante solo.
 8. I due punti si utilizzano unicamente per i discorsi diretti e sono seguiti da uno spazio singolo.
@@ -30,23 +30,17 @@ REGOLE_ITA = """REGOLE DI FORMATTAZIONE (obbligatorie):
 11. L'uso del punto e virgola NON è consentito.
 12. NON saltare né censurare frasi."""
 
-# Prompt specifico per la colonna ITA (strutturato per Excel e Chunking)
+# Prompt specifico per la colonna ITA
 REWORK_PROMPT = f"""Sei un linguista esperto di soprattitoli teatrali italiani.
 Ricevi un elenco numerato di battute. Devi formattarle applicando QUESTE REGOLE, rispettando rigorosamente questo ordine di importanza:
 
-PRIORITÀ ASSOLUTA 1 (Grammatica, Pause Logiche e Senso):
-- DIVIETI DI DIVISIONE: La divisione tra le righe NON DEVE MAI avvenire tra articolo e sostantivo (es. "un / angelo" è un errore gravissimo), preposizione e sostantivo, aggettivo e sostantivo, soggetto e verbo, ausiliare e verbo principale (es. "è / annegato" è un errore gravissimo), qualifica e nome proprio.
-- La divisione a capo deve rispettare i nessi logici naturali (es. dopo virgole, punti, congiunzioni, o tra principale e subordinata).
-- REQUISITO DI FLESSIBILITÀ: Sei esplicitamente autorizzato a superare il limite di 40 caratteri su una riga (fino a un massimo di 45-46 caratteri) se questo serve a evitare l'infrazione di una regola grammaticale o la rottura di una parola! È molto meglio avere una riga di 44 caratteri e una di 15, piuttosto che un taglio errato a 40 caratteri che distrugge la sintassi.
+PRIORITÀ ASSOLUTA 1 (Limiti e Grammatica):
+- LIMITE TASSATIVO: NON superare MAI i 42 caratteri per riga (spazi inclusi). Non ci sono eccezioni.
+- DIVIETI DI DIVISIONE: Rispetta scrupolosamente i divieti (es. "un / angelo" o "è / annegato" sono errori inaccettabili). La divisione a capo deve rispettare i nessi logici naturali.
+- Se rispettare un nesso logico ti porta a superare i 42 caratteri, devi ANTICIPARE il taglio a un punto logico precedente (es. fare una riga da 20 caratteri e una da 35) pur di restare entro il limite senza fare errori grammaticali.
 
-PRIORITÀ 2 (Lunghezza e Formato):
-- Cerca di stare entro i 40 caratteri per riga, spazi compresi, ma SOLO se la Priorità 1 è pienamente rispettata.
+PRIORITÀ 2 (Formato):
 - Massimo due righe per sottotitolo. Usa il carattere speciale '\\n' per andare a capo all'interno della stringa.
-
-ALTRE REGOLE:
-- I numeri da zero a dieci vanno scritti in lettere. I numeri maggiori di dieci in numeri arabi. Qualsiasi numero a inizio frase va scritto in lettere.
-- Il simbolo "-" si usa a inizio riga per distinguere due parlanti nello stesso sottotitolo.
-- Virgolette basse (« »). Il punto e virgola NON è consentito.
 
 Rispondi ESCLUSIVAMENTE con un oggetto JSON dove le chiavi sono gli indici originali forniti nel testo e i valori sono le battute formattate.
 MANTENI GLI INDICI ESATTI CHE TI VENGONO FORNITI.
@@ -64,7 +58,7 @@ Riformula le frasi per la colonna ITA+ applicando queste regole.
 Puoi riscrivere liberamente mantenendo il significato.
 
 {REGOLE_ITA}
-- Massimo 37 caratteri per riga in questo percorso.
+- ATTENZIONE: In questo percorso il limite massimo è di 37 caratteri per riga, spazi inclusi. TASSATIVO e senza eccezioni.
 
 Rispondi con un array JSON di stringhe.
 Esempio: ["Prima riga riformulata", "Seconda riga se necessario"]"""
@@ -90,7 +84,7 @@ def _call_gemini(payload: dict, max_retries: int = 5) -> dict:
     last_error = None
     for attempt in range(max_retries):
         if attempt > 0:
-            wait = 2 ** attempt  # 2, 4, 8, 16 secondi
+            wait = 2 ** attempt
             time.sleep(wait)
 
         req = urllib.request.Request(
@@ -104,10 +98,8 @@ def _call_gemini(payload: dict, max_retries: int = 5) -> dict:
         except urllib.error.HTTPError as e:
             error_body = e.read().decode()
             last_error = f"Errore Gemini ({e.code}): {error_body}"
-            # Retry solo su 503 (server sovraccarico) e 429 (quota/crediti)
             if e.code in (503, 429):
                 continue
-            # Su altri errori (404, 400...) fallisci subito
             raise RuntimeError(last_error)
 
     raise RuntimeError(f"Gemini non disponibile dopo {max_retries} tentativi. {last_error}")
@@ -121,20 +113,15 @@ def _extract_text(body: dict) -> str:
 
 
 def rework_text(indexed_sentences: list[tuple[int, str]]) -> dict[int, str]:
-    """
-    Elabora le frasi a scaglioni (chunk).
-    Riceve una lista di tuple (indice_originale, testo) per evitare sfasamenti.
-    Restituisce un dizionario {indice_originale: testo_riformulato}.
-    """
+    """Elabora le frasi a scaglioni (chunk)."""
     if not indexed_sentences:
         return {}
 
-    chunk_size = 60 # Bilanciamento perfetto: preciso sulla grammatica e veloce contro il timeout
+    chunk_size = 60
     result_map = {}
 
     for i in range(0, len(indexed_sentences), chunk_size):
         chunk = indexed_sentences[i:i+chunk_size]
-        # Passiamo a Gemini il suo vero indice originale, es: "14. Ciao mondo"
         user_text = "\n".join(f"{idx}. {s}" for idx, s in chunk)
         payload = {
             "contents": [{"parts": [{"text": REWORK_PROMPT + "\n\n" + user_text}]}],
@@ -149,7 +136,6 @@ def rework_text(indexed_sentences: list[tuple[int, str]]) -> dict[int, str]:
                 result_map[int(k)] = str(v)
         except Exception as e:
             print(f"Errore chunk da indice {chunk[0][0]}: {e}")
-            # Se fallisce un piccolo blocco, mantiene l'originale intatto
             for idx, s in chunk:
                 result_map[idx] = s
 
