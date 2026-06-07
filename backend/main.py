@@ -12,8 +12,8 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
-from parser import (parse_document, propose_colors, apply_colors,
-                    COLOR_META, split_at_max_chars)
+# split_at_max_chars rimosso da qui per renderlo autonomo
+from parser import parse_document, propose_colors, apply_colors, COLOR_META
 from ai import rework_text, rework_ita_plus
 
 app = FastAPI(title="Soprattitoli Generator API")
@@ -21,6 +21,22 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 sessions: dict[str, list[dict]] = {}
+
+# ── Funzione di Emergenza (Fallback) ───────────────────────────────────────────
+def split_at_max_chars(text: str, max_chars: int) -> list[str]:
+    """Suddivide meccanicamente un testo senza troncare le parole (uso fallback)."""
+    words = text.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        if len(current_line) + len(word) + 1 <= max_chars:
+            current_line += (word + " ") if current_line else word + " "
+        else:
+            lines.append(current_line.strip())
+            current_line = word + " "
+    if current_line:
+        lines.append(current_line.strip())
+    return lines
 
 # ── Modelli ────────────────────────────────────────────────────────────────────
 
@@ -102,21 +118,15 @@ async def process(criteria: Criteria):
     indexed_sentences = [(i, r["ita"]) for i, r in enumerate(rows_from_parser) if r.get("ita") and r["ita"].strip()]
     
     try:
-        # L'AI ci restituisce un dizionario: {indice_originale: "testo \n formattato"}
         ai_results_map = rework_text(indexed_sentences)
         
-        # Ricostruiamo la lista finale senza sfasare didascalie e battute!
         expanded = []
         for i, row_parser in enumerate(rows_from_parser):
-            
-            # Formatta il nome in maiuscolo
             personaggio_upper = row_parser.get("personaggio", "").upper()
             
-            # Se la riga era una battuta (e AI l'ha elaborata), prendi il testo di AI
             if i in ai_results_map:
                 testo_finale = ai_results_map[i]
             else:
-                # Altrimenti (es. didascalia) lascia l'originale (che spesso è vuoto o ha solo le note)
                 testo_finale = row_parser.get("ita", "")
                 
             expanded.append({
@@ -131,6 +141,7 @@ async def process(criteria: Criteria):
         expanded = []
         for row in rows_from_parser:
             if row["ita"]:
+                # Usa la funzione autonoma definita in alto
                 for j, line in enumerate(split_at_max_chars(row["ita"], criteria.max_chars)):
                     expanded.append({
                         "colore":      row["colore"],
@@ -170,10 +181,8 @@ async def rework(body: ReworkRequest):
     if not body.sentences:
         raise HTTPException(400, "Nessuna battuta.")
     try:
-        # Crea indici finti per riutilizzare la funzione
         indexed = [(i, s) for i, s in enumerate(body.sentences)]
         res_map = rework_text(indexed)
-        # Riporta il dizionario a una lista per questa specifica chiamata
         return {"reworked": [res_map.get(i, orig) for i, orig in enumerate(body.sentences)]}
     except Exception as e:
         raise HTTPException(500, str(e))
