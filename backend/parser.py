@@ -1,13 +1,12 @@
 """
 parser.py – Logica di parsing del copione.
 Supporta nomi in MAIUSCOLO, GRASSETTO, o criterio custom.
-Include suddivisione battute a max N caratteri per parola.
+Estrae le battute intere per delegare la formattazione a Gemini o al Fallback.
 """
 
 import re
 from collections import defaultdict
 import docx
-
 
 # ── Costanti colori ────────────────────────────────────────────────────────────
 
@@ -19,17 +18,11 @@ COLOR_META = {
 }
 COLOR_ORDER = ['w', 'c', 'g', 'm']
 
-
 # ── Utilità ────────────────────────────────────────────────────────────────────
 
 def is_para_italic(para):
     runs = [r for r in para.runs if r.text.strip()]
     return bool(runs) and all(r.italic for r in runs)
-
-
-def split_sentences(text):
-    parts = re.split(r'(?<=[.!?])\s+', text.strip())
-    return [p.strip() for p in parts if p.strip()]
 
 
 def extract_inline_parens(text):
@@ -65,34 +58,6 @@ def get_bold_prefix(para):
         return name, rest
     return None, None
 
-
-def split_at_max_chars(text: str, max_chars: int = 42) -> list[str]:
-    """
-    Divide il testo in righe di massimo max_chars caratteri,
-    spezzando sugli spazi (non taglia le parole).
-    """
-    if len(text) <= max_chars:
-        return [text]
-
-    lines = []
-    words = text.split(' ')
-    current = ''
-
-    for word in words:
-        if not current:
-            current = word
-        elif len(current) + 1 + len(word) <= max_chars:
-            current += ' ' + word
-        else:
-            lines.append(current)
-            current = word
-
-    if current:
-        lines.append(current)
-
-    return lines
-
-
 # ── Parser principale ──────────────────────────────────────────────────────────
 
 def parse_document(path: str, criteria: dict) -> list[dict]:
@@ -107,16 +72,10 @@ def parse_document(path: str, criteria: dict) -> list[dict]:
     sep_char    = criteria.get('sep_char', ' – ')
     desc_italic = criteria.get('desc_italic', True)
     desc_parens = criteria.get('desc_parens', True)
-    max_chars   = int(criteria.get('max_chars', 42))
 
     def add_rows(char, ita, note=''):
-        """Aggiunge una o più righe spezzando ITA a max_chars."""
-        if ita:
-            lines = split_at_max_chars(ita, max_chars)
-            for line in lines:
-                rows.append({'colore': '', 'personaggio': char or '', 'ita': line, 'note': note})
-        else:
-            rows.append({'colore': '', 'personaggio': char or '', 'ita': '', 'note': note})
+        """Aggiunge la riga INTERA senza tagliarla."""
+        rows.append({'colore': '', 'personaggio': char or '', 'ita': ita, 'note': note})
 
     for para in doc.paragraphs:
         text = para.text.strip()
@@ -185,18 +144,16 @@ def parse_document(path: str, criteria: dict) -> list[dict]:
         if not dialogue:
             continue
 
-        # Dividi in frasi, poi in righe da max_chars
-        sentences = split_sentences(dialogue)
-        for sentence in sentences:
-            if desc_parens:
-                clean_s, inline_note = extract_inline_parens(sentence)
-            else:
-                clean_s, inline_note = sentence, ''
-            if clean_s:
-                add_rows(current_char, clean_s, inline_note)
+        # Estrae le note tra parentesi nella battuta e inserisce la battuta intera
+        if desc_parens:
+            clean_s, inline_note = extract_inline_parens(dialogue)
+        else:
+            clean_s, inline_note = dialogue, ''
+            
+        if clean_s:
+            add_rows(current_char, clean_s, inline_note)
 
     return rows
-
 
 def count_chars(rows: list[dict]) -> dict:
     counts = defaultdict(int)
@@ -204,7 +161,6 @@ def count_chars(rows: list[dict]) -> dict:
         if row.get('ita') and row.get('personaggio'):
             counts[row['personaggio']] += len(row['ita'])
     return dict(counts)
-
 
 def propose_colors(rows: list[dict]) -> list[dict]:
     counts = count_chars(rows)
@@ -222,7 +178,6 @@ def propose_colors(rows: list[dict]) -> list[dict]:
             'color_hex':  COLOR_META[key]['hex'],
         })
     return result
-
 
 def apply_colors(rows: list[dict], assignments: dict) -> list[dict]:
     for row in rows:
