@@ -12,7 +12,6 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
-# split_at_max_chars rimosso da qui per renderlo autonomo
 from parser import parse_document, propose_colors, apply_colors, COLOR_META
 from ai import rework_text, rework_ita_plus
 
@@ -114,7 +113,6 @@ async def process(criteria: Criteria):
     except Exception as e:
         raise HTTPException(500, f"Errore parsing: {e}")
 
-    # Estraiamo le frasi accoppiandole al loro VERO indice originale
     indexed_sentences = [(i, r["ita"]) for i, r in enumerate(rows_from_parser) if r.get("ita") and r["ita"].strip()]
     
     try:
@@ -122,7 +120,10 @@ async def process(criteria: Criteria):
         
         expanded = []
         for i, row_parser in enumerate(rows_from_parser):
-            personaggio_upper = row_parser.get("personaggio", "").upper()
+            
+            # FIX: Previene il crash se il personaggio è None (es. nelle didascalie)
+            pers = row_parser.get("personaggio")
+            personaggio_upper = pers.upper() if pers else ""
             
             if i in ai_results_map:
                 testo_finale = ai_results_map[i]
@@ -137,15 +138,15 @@ async def process(criteria: Criteria):
             })
             
     except Exception as e:
-        print(f"Errore Gemini durante process, uso fallback: {e}")
+        print(f"Errore critico durante process, uso fallback meccanico: {e}")
         expanded = []
         for row in rows_from_parser:
             if row["ita"]:
-                # Usa la funzione autonoma definita in alto
                 for j, line in enumerate(split_at_max_chars(row["ita"], criteria.max_chars)):
+                    pers_fallback = row.get("personaggio")
                     expanded.append({
                         "colore":      row["colore"],
-                        "personaggio": row.get("personaggio", "").upper(),
+                        "personaggio": pers_fallback.upper() if pers_fallback else "",
                         "ita":         line,
                         "note":        row["note"] if j == 0 else "",
                     })
