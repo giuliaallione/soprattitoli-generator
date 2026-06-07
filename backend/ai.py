@@ -34,23 +34,22 @@ REGOLE_ITA = """REGOLE DI FORMATTAZIONE (obbligatorie):
 REWORK_PROMPT = f"""Sei un linguista esperto di soprattitoli teatrali italiani.
 Ricevi un elenco numerato di battute. Devi formattarle applicando QUESTE REGOLE, rispettando rigorosamente questo ordine di importanza:
 
-PRIORITÀ ASSOLUTA 1 (Limiti e Grammatica):
+PRIORITÀ ASSOLUTA 1 (Limiti di Riga e Grammatica):
 - LIMITE TASSATIVO: NON superare MAI i 42 caratteri per riga (spazi inclusi). Non ci sono eccezioni.
 - DIVIETI DI DIVISIONE: Rispetta scrupolosamente i divieti (es. "un / angelo" o "è / annegato" sono errori inaccettabili). La divisione a capo deve rispettare i nessi logici naturali.
-- Se rispettare un nesso logico ti porta a superare i 42 caratteri, devi ANTICIPARE il taglio a un punto logico precedente (es. fare una riga da 20 caratteri e una da 35) pur di restare entro il limite senza fare errori grammaticali.
+- Se rispettare un nesso logico ti porta a superare i 42 caratteri, devi ANTICIPARE il taglio a un punto logico precedente pur di restare entro il limite senza fare errori.
 
-PRIORITÀ 2 (Formato):
-- Massimo due righe per sottotitolo. Usa il carattere speciale '\\n' per andare a capo all'interno della stringa.
+PRIORITÀ ASSOLUTA 2 (Limite di 2 Righe e Overflow):
+- MASSIMO DUE RIGHE per sottotitolo. Questo limite è invalicabile. NON CREARE MAI UNA TERZA RIGA.
+- Se la battuta originale è molto lunga, compila la prima e la seconda riga in modo logico (massimo 42 caratteri l'una).
+- Tutto il testo in eccedenza (quello che costituirebbe una terza riga) DEVE scivolare in un NUOVO sottotitolo separato.
+- Usa ESCLUSIVAMENTE la stringa " || " (doppia barra verticale) per segnalare la divisione tra il primo sottotitolo e quello successivo generato dall'eccedenza.
+- Usa il carattere '\\n' per andare a capo all'interno dello stesso sottotitolo.
+- Esempio corretto: "Prima riga riempita in modo logico\\nSeconda riga riempita in modo logico || Testo in eccedenza che forma il nuovo\\nsottotitolo successivo"
 
 Rispondi ESCLUSIVAMENTE con un oggetto JSON dove le chiavi sono gli indici originali forniti nel testo e i valori sono le battute formattate.
 MANTENI GLI INDICI ESATTI CHE TI VENGONO FORNITI.
-
-Esempio di output:
-{{
-  "45": "Prima riga del sottotitolo\\nSeconda riga del sottotitolo",
-  "46": "Sottotitolo corto su una riga sola",
-  "49": "Altra battuta lunga\\nche va a capo qui"
-}}"""
+"""
 
 # Prompt per il percorso ITA+
 ITA_PLUS_PROMPT = f"""Sei un esperto di soprattitoli teatrali italiani.
@@ -73,7 +72,6 @@ def _gen_config(max_tokens: int = 8192, temp: float = 0.1) -> dict:
 
 
 def _call_gemini(payload: dict, max_retries: int = 5) -> dict:
-    """Chiama Gemini con retry automatico ed exponential backoff."""
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         raise ValueError("GEMINI_API_KEY non configurata.")
@@ -113,7 +111,6 @@ def _extract_text(body: dict) -> str:
 
 
 def rework_text(indexed_sentences: list[tuple[int, str]]) -> dict[int, str]:
-    """Elabora le frasi a scaglioni (chunk)."""
     if not indexed_sentences:
         return {}
 
