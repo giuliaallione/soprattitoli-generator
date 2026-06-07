@@ -1,5 +1,6 @@
 """
 main.py – FastAPI. Dopo il parsing chiama Gemini per formattazione e chunking in modo sicuro.
+Fallback semplificato: mantiene la frase originale intera in caso di errore.
 """
 
 import os, io, uuid, tempfile
@@ -20,22 +21,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 sessions: dict[str, list[dict]] = {}
-
-# ── Funzione di Emergenza (Fallback) ───────────────────────────────────────────
-def split_at_max_chars(text: str, max_chars: int) -> list[str]:
-    """Suddivide meccanicamente un testo senza troncare le parole (uso fallback)."""
-    words = text.split()
-    lines = []
-    current_line = ""
-    for word in words:
-        if len(current_line) + len(word) + 1 <= max_chars:
-            current_line += (word + " ") if current_line else word + " "
-        else:
-            lines.append(current_line.strip())
-            current_line = word + " "
-    if current_line:
-        lines.append(current_line.strip())
-    return lines
 
 # ── Modelli ────────────────────────────────────────────────────────────────────
 
@@ -121,7 +106,6 @@ async def process(criteria: Criteria):
         expanded = []
         for i, row_parser in enumerate(rows_from_parser):
             
-            # FIX: Previene il crash se il personaggio è None (es. nelle didascalie)
             pers = row_parser.get("personaggio")
             personaggio_upper = pers.upper() if pers else ""
             
@@ -138,20 +122,16 @@ async def process(criteria: Criteria):
             })
             
     except Exception as e:
-        print(f"Errore critico durante process, uso fallback meccanico: {e}")
+        print(f"Errore critico durante process, uso fallback (frase intera): {e}")
         expanded = []
         for row in rows_from_parser:
-            if row["ita"]:
-                for j, line in enumerate(split_at_max_chars(row["ita"], criteria.max_chars)):
-                    pers_fallback = row.get("personaggio")
-                    expanded.append({
-                        "colore":      row["colore"],
-                        "personaggio": pers_fallback.upper() if pers_fallback else "",
-                        "ita":         line,
-                        "note":        row["note"] if j == 0 else "",
-                    })
-            else:
-                expanded.append(row)
+            pers_fallback = row.get("personaggio")
+            expanded.append({
+                "colore":      row.get("colore", ""),
+                "personaggio": pers_fallback.upper() if pers_fallback else "",
+                "ita":         row.get("ita", ""),
+                "note":        row.get("note", "")
+            })
 
     sessions[criteria.session_id] = expanded
     colors = propose_colors(expanded)
