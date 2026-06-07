@@ -1,6 +1,6 @@
 """
 main.py – FastAPI. Dopo il parsing chiama Gemini per formattazione e chunking in modo sicuro.
-Fallback semplificato: mantiene la frase originale intera in caso di errore.
+Aggiunto gestore di split per battute troppo lunghe (||).
 """
 
 import os, io, uuid, tempfile
@@ -105,21 +105,29 @@ async def process(criteria: Criteria):
         
         expanded = []
         for i, row_parser in enumerate(rows_from_parser):
-            
             pers = row_parser.get("personaggio")
             personaggio_upper = pers.upper() if pers else ""
             
             if i in ai_results_map:
-                testo_finale = ai_results_map[i]
+                raw_text = ai_results_map[i]
+                # Dividiamo il testo generato da Gemini se ha inserito i separatori ||
+                parts = [p.strip() for p in raw_text.split("||")]
+                for p_idx, part in enumerate(parts):
+                    if part:
+                        expanded.append({
+                            "colore":      row_parser.get("colore", ""),
+                            # Mette il nome del personaggio solo sulla prima riga, se continua lo lascia vuoto per pulizia
+                            "personaggio": personaggio_upper if p_idx == 0 else "",
+                            "ita":         part,
+                            "note":        row_parser.get("note", "") if p_idx == 0 else ""
+                        })
             else:
-                testo_finale = row_parser.get("ita", "")
-                
-            expanded.append({
-                "colore":      row_parser.get("colore", ""),
-                "personaggio": personaggio_upper,
-                "ita":         testo_finale,
-                "note":        row_parser.get("note", "")
-            })
+                expanded.append({
+                    "colore":      row_parser.get("colore", ""),
+                    "personaggio": personaggio_upper,
+                    "ita":         row_parser.get("ita", ""),
+                    "note":        row_parser.get("note", "")
+                })
             
     except Exception as e:
         print(f"Errore critico durante process, uso fallback (frase intera): {e}")
@@ -164,7 +172,9 @@ async def rework(body: ReworkRequest):
     try:
         indexed = [(i, s) for i, s in enumerate(body.sentences)]
         res_map = rework_text(indexed)
-        return {"reworked": [res_map.get(i, orig) for i, orig in enumerate(body.sentences)]}
+        # Se anche in Rielabora singola restituisce ||, per ora prendiamo la prima parte, 
+        # l'utente la editerà a mano dato che è una modifica singola
+        return {"reworked": [res_map.get(i, orig).replace(" || ", " ") for i, orig in enumerate(body.sentences)]}
     except Exception as e:
         raise HTTPException(500, str(e))
 
